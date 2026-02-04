@@ -22,13 +22,11 @@ export async function proxy(request: NextRequest) {
     }
   );
 
-  // Refresh the session cookie if needed (keeps users logged in across refresh)
   await supabase.auth.getUser();
-
   return response;
 }
 
 export const config = {
+  runtime: "nodejs", // ✅ important on Vercel
   matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };
-
