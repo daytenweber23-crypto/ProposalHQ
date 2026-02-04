@@ -27,6 +27,5 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  runtime: "nodejs", // ✅ important on Vercel
   matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };
