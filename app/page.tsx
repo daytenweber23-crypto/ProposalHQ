@@ -86,12 +86,10 @@ export default function Page() {
     const sessionId = params.get("session_id");
     if (!sessionId) return;
 
-    // Give webhook a moment to update Supabase, then refresh
     const t = setTimeout(() => {
       void ensureProfileAndLoadPlan(userId, userEmail);
     }, 800);
 
-    // Optional: clean URL so you don't keep re-running on refresh
     const clean = setTimeout(() => {
       const url = new URL(window.location.href);
       url.searchParams.delete("session_id");
@@ -105,7 +103,7 @@ export default function Page() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
 
-  // Load history after login
+  // ✅ Load history after login
   useEffect(() => {
     if (!userId) return;
     void loadHistory();
@@ -121,7 +119,6 @@ export default function Page() {
     setPlanLoading(true);
 
     try {
-      // 1) Try to fetch profile
       const { data: existing, error: fetchErr } = await supabase
         .from("profiles")
         .select("*")
@@ -130,7 +127,6 @@ export default function Page() {
 
       if (fetchErr) throw fetchErr;
 
-      // 2) If missing, create a default "free" profile
       if (!existing) {
         const { data: inserted, error: insertErr } = await supabase
           .from("profiles")
@@ -161,13 +157,15 @@ export default function Page() {
   }
 
   async function loadHistory() {
+    if (!userId) return;
+
     setError(null);
     setHistoryLoading(true);
 
     const { data, error } = await supabase
       .from("proposals")
       .select("*")
-      .eq("user_id", userId) // ✅ only load the signed-in user's proposals
+      .eq("user_id", userId)
       .order("created_at", { ascending: false })
       .limit(50);
 
@@ -182,39 +180,20 @@ export default function Page() {
     setRows((data as ProposalRow[]) ?? []);
   }
 
-  async function saveProposalToSupabase(params: {
-    clientName: string;
-    notes: string;
-    proposal: string;
-  }) {
-    if (!userId) return;
-
-    const { data, error } = await supabase
-      .from("proposals")
-      .insert({
-        user_id: userId,
-        client_name: params.clientName,
-        notes: params.notes,
-        proposal: params.proposal,
-      })
-      .select("*")
-      .single();
-
-    if (error) {
-      console.error(error);
-      setError(`Saved failed: ${error.message}`);
-      return;
-    }
-
-    const inserted = data as ProposalRow;
-    setRows((prev) => [inserted, ...prev]);
-    setActiveId(inserted.id);
-  }
-
   async function deleteProposal(id: string) {
     setError(null);
 
-    const { error } = await supabase.from("proposals").delete().eq("id", id);
+    if (!userId) {
+      setError("Missing user. Please refresh.");
+      return;
+    }
+
+    const { error } = await supabase
+      .from("proposals")
+      .delete()
+      .eq("id", id)
+      .eq("user_id", userId);
+
     if (error) {
       console.error(error);
       setError(error.message);
@@ -246,32 +225,61 @@ export default function Page() {
     setError(null);
   }
 
+  // ✅ FIX: send Supabase access token to server so /api/generate can auth reliably on mobile
   async function generateProposal() {
     setError(null);
     setLoading(true);
     setProposal("");
 
     try {
+      const {
+        data: { session },
+        error: sessionErr,
+      } = await supabase.auth.getSession();
+
+      if (sessionErr) throw sessionErr;
+
+      const token = session?.access_token;
+      if (!token) {
+        setError("Session missing. Please sign out and sign back in.");
+        return;
+      }
+
       const res = await fetch("/api/generate", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`, // ✅ IMPORTANT
+        },
         body: JSON.stringify({ clientName, notes }),
       });
 
       const data = await res.json().catch(() => ({}));
 
+      if (res.status === 402 && data?.code === "FREE_LIMIT_REACHED") {
+        setError(data?.error || "Free plan limit reached. Upgrade to Pro.");
+        return;
+      }
+
+      if (res.status === 401) {
+        setError("Unauthorized. Please sign out and sign back in.");
+        return;
+      }
+
       if (!res.ok) {
         throw new Error(data?.error || `Request failed (${res.status})`);
       }
 
-      const generated = data.proposal || "No proposal returned.";
+      const generated = data?.proposal || "No proposal returned.";
       setProposal(generated);
 
-      await saveProposalToSupabase({
-        clientName: clientName.trim(),
-        notes,
-        proposal: generated,
-      });
+      const saved = data?.saved;
+      if (saved?.id) {
+        setRows((prev) => [saved as ProposalRow, ...prev]);
+        setActiveId(saved.id);
+      } else {
+        void loadHistory();
+      }
     } catch (e: any) {
       setError(e?.message ?? "Error generating proposal");
     } finally {
@@ -344,7 +352,6 @@ export default function Page() {
     }
   }
 
-  // ✅ Stripe: Upgrade to Pro (redirect to Stripe Checkout)
   async function upgradeToPro() {
     setError(null);
 
@@ -379,7 +386,6 @@ export default function Page() {
     }
   }
 
-  // ✅ Stripe: Open Billing Portal (Manage subscription)
   async function openBillingPortal() {
     setError(null);
 
@@ -473,7 +479,9 @@ export default function Page() {
               </p>
 
               <ul className="mt-5 space-y-2 text-sm text-neutral-600">
-                <li>• Structured proposal sections (goals, scope, plan, pricing)</li>
+                <li>
+                  • Structured proposal sections (goals, scope, plan, pricing)
+                </li>
                 <li>• One-click PDF export with clean page breaks</li>
                 <li>• Proposal history saved per user</li>
               </ul>
@@ -490,6 +498,15 @@ export default function Page() {
                   {error}
                 </div>
               )}
+
+              <div className="mt-6 flex gap-3 text-xs text-neutral-500">
+                <a href="/terms" className="hover:underline">
+                  Terms
+                </a>
+                <a href="/privacy" className="hover:underline">
+                  Privacy
+                </a>
+              </div>
             </div>
 
             <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-neutral-200">
@@ -523,7 +540,6 @@ export default function Page() {
   return (
     <div className="min-h-screen bg-neutral-50">
       <div className="mx-auto max-w-6xl px-4 py-8">
-        {/* Top bar */}
         <div className="flex items-center justify-between">
           <Logo />
           <div className="flex items-center gap-3">
@@ -561,7 +577,6 @@ export default function Page() {
         </div>
 
         <div className="mt-6 grid gap-6 lg:grid-cols-12">
-          {/* History */}
           <aside className="lg:col-span-4">
             <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-neutral-200">
               <div className="flex items-center justify-between gap-3">
@@ -639,10 +654,8 @@ export default function Page() {
             </div>
           </aside>
 
-          {/* Editor + Output */}
           <main className="lg:col-span-8">
             <div className="grid gap-6 lg:grid-cols-2">
-              {/* Inputs */}
               <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-neutral-200">
                 <div className="flex items-start justify-between gap-3">
                   <div>
@@ -718,7 +731,6 @@ export default function Page() {
                 )}
               </div>
 
-              {/* Output */}
               <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-neutral-200">
                 <div className="flex items-start justify-between gap-3">
                   <div>
@@ -757,9 +769,18 @@ export default function Page() {
               </div>
             </div>
 
-            <div className="mt-6 text-xs text-neutral-500">
-              ProposalHQ • Saved per user • Do not paste confidential personal
-              data.
+            <div className="mt-6 flex flex-wrap items-center gap-3 text-xs text-neutral-500">
+              <span>
+                ProposalHQ • Saved per user • Do not paste confidential personal
+                data.
+              </span>
+              <span className="hidden sm:inline">•</span>
+              <a href="/terms" className="hover:underline">
+                Terms
+              </a>
+              <a href="/privacy" className="hover:underline">
+                Privacy
+              </a>
             </div>
           </main>
         </div>
@@ -767,6 +788,10 @@ export default function Page() {
     </div>
   );
 }
+
+
+
+
 
 
 
